@@ -6,24 +6,43 @@ use std::path::Path;
 use std::fs::File;
 use std::io::BufWriter;
 use std::simd::{f64x4, Mask, u32x4, i64x4};
+use clap::Parser;
 use png;
 use rayon::prelude::*;
 
 mod scalar;
 mod simd;
 
+/// Arguments for the Mandlebrot generator.
+#[derive(Parser, Debug)]
+#[clap(author, version, about, long_about = None)]
+struct Args {
+
+    /// Width of the image.
+    #[clap(short, long, value_parser, default_value_t = 1024)]
+    width: u32,
+
+    /// Height of the image.
+    #[clap(short, long, value_parser, default_value_t = 1024)]
+    height: u32,
+
+    /// Path to the file.
+    #[clap(short, long, value_parser, default_value_t = String::from( "mandlebrot.png" ))]
+    filename: String,
+}
 
 fn main() {
 
-    // let path = std::env::args()
-    //     .nth(1)
-    //     .expect("Expected a filename to output to.");
-    let file = File::create( "/home/fluxie/mandlebrot.png").unwrap();
+    // Parse the arguments.
+    let args = Args::parse();
+
+    // Prepare output file.
+    let file = File::create( args.filename ).expect( "Creating the target file failed." );
     let ref mut w = BufWriter::new( file );
 
     // Prepare the image.
-    let width = 10240;
-    let height = 10240;
+    let width = args.width;
+    let height = args.height;
     let mut encoder = png::Encoder::new(w, width, height);
     encoder.set_color( png::ColorType::Grayscale );
     encoder.set_depth( png::BitDepth::Eight );

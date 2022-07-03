@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
     png = "0.17.5"
     rayon = "1.5.3"
+    clap = { version = "3.2.8", features = ["derive"] }
 
 [features]
     portable_simd = []
