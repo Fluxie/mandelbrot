@@ -1,109 +1,17 @@
-use std::cmp::Ordering;
-use std::convert::Infallible;
-use std::iter::{Chain, Cloned, Copied, Cycle, Enumerate, Filter, FilterMap, FlatMap, Flatten, Fuse, Inspect, Map, MapWhile, Peekable, Product, Rev, Scan, Skip, SkipWhile, StepBy, Sum, Take, TakeWhile, Zip};
+#![feature(portable_simd)]
+#![feature(test)]
+
+extern crate test;
 use std::path::Path;
 use std::fs::File;
 use std::io::BufWriter;
+use std::simd::{f64x4, Mask, u32x4, i64x4};
 use png;
-use png::text_metadata::{ITXtChunk, ZTXtChunk};
 use rayon::prelude::*;
 
+mod scalar;
+mod simd;
 
-struct Mandlebrot {
-
-    width: u32,
-    height: u32,
-    x_step: f64,
-    y_step: f64,
-}
-
-struct MandlebrotIterator<'a> {
-
-    mandlebrot: &'a Mandlebrot,
-    next_pixel: MandlebrotPixel,
-}
-
-impl Mandlebrot {
-
-    const X_MIN: f64 = -2.0;
-    const Y_MIN: f64 = -1.12;
-
-    pub fn new(
-        width: u32,
-        height: u32,
-    ) -> Mandlebrot {
-
-        // Scale the pixels.
-        let x_step = ( f64::abs( Mandlebrot::X_MIN ) + f64::abs( 0.47  ) ) / width as f64;
-        let y_step = ( f64::abs( Mandlebrot::Y_MIN ) + f64::abs( 1.12  ) ) / height as f64;
-
-        // Start.
-        Mandlebrot {
-            width, height,
-            x_step, y_step,
-
-        }
-    }
-
-    pub fn iter(
-        &self
-    ) -> MandlebrotIterator {
-        MandlebrotIterator {
-            mandlebrot: self,
-            next_pixel: MandlebrotPixel { x: 0, x_scaled: Mandlebrot::X_MIN, y: 0, y_scaled: Mandlebrot::Y_MIN },
-        }
-    }
-}
-
-impl<'a> Iterator for MandlebrotIterator<'a> {
-    type Item = MandlebrotPixel;
-
-
-    /// Gets next pixel that fills the grid.
-    fn next(&mut self) -> Option<Self::Item> {
-
-        // Last pixel returned?
-        if self.next_pixel.y == self.mandlebrot.height {
-            return None;
-        };
-
-        // Increment x axis first.
-        let mut pixel;
-        if self.next_pixel.x == self.mandlebrot.width - 1 {
-            pixel = MandlebrotPixel {
-                x: 0,
-                x_scaled: Mandlebrot::X_MIN,
-                y: self.next_pixel.y + 1,
-                y_scaled: Mandlebrot::Y_MIN + ( self.next_pixel.y + 1 ) as f64 * self.mandlebrot.y_step,
-            }
-        }
-        else {
-            pixel = MandlebrotPixel {
-                x: self.next_pixel.x + 1,
-                x_scaled: Mandlebrot::X_MIN + ( self.next_pixel.x + 1 ) as f64 * self.mandlebrot.x_step,
-                y: self.next_pixel.y,
-                y_scaled: self.next_pixel.y_scaled
-            }
-         }
-
-        // Grab the pixel we will return.
-        // By storing the value of the next pixel instead of the previous pixel it was possible
-        // to initialize the generator without Option.
-        std::mem::swap( &mut pixel, &mut self.next_pixel );
-
-        // Return the next pixel.
-        return Some( pixel );
-    }
-}
-
-/// A pixel in Mandlebrot scale.
-struct MandlebrotPixel {
-
-    x: u32,
-    y: u32,
-    x_scaled: f64,
-    y_scaled: f64,
-}
 
 fn main() {
 
@@ -113,40 +21,110 @@ fn main() {
     let file = File::create( "/home/fluxie/mandlebrot.png").unwrap();
     let ref mut w = BufWriter::new( file );
 
-    let width = 10000;
-    let height = 10000;
+    // Prepare the image.
+    let width = 10240;
+    let height = 10240;
     let mut encoder = png::Encoder::new(w, width, height);
     encoder.set_color( png::ColorType::Grayscale );
     encoder.set_depth( png::BitDepth::Eight );
     let mut writer = encoder.write_header().expect( "Preparing image failed." );
 
-    let mut mandlebrot = Mandlebrot::new(width, height );
-
     // Calculate color for each pixel.
-    let image_data: Vec<u8> = mandlebrot.iter().par_bridge()
-        .map( |mpixel| { calculate_color( mpixel ) } )
-        .collect();
-    writer.write_image_data(& image_data).expect( "Invalid data");
-    writer.finish().expect( "Finalized" );
+    let simd_mandlebrot = simd::Mandlebrot::new(width, height );
+    let mut pixel_index = 0;
+    let mut simd_image_data= simd_mandlebrot.iter()
 
-    println!("Hello, world!");
+        // Specify index for each individual pixel.
+        .map( |pixel| {
+            pixel_index += 1;
+            ( pixel_index, pixel )
+        } )
+
+        // Enable parallelism
+        .par_bridge()
+
+        // Calculate color for each pixel.
+        .map(|pixel| (pixel.0, simd::calculate_color( pixel.1 ) ) )
+        .collect::<Vec<_>>();
+
+    // The parallel calculation above trashes the original order.
+    // Sort the result to generate the final output.
+    simd_image_data.par_sort_by( |a, b| a.0.partial_cmp( &b.0 ).unwrap() );
+    let simd_image_data = simd_image_data.into_iter()
+        .flat_map( |mpixel| mpixel.1 )
+        .collect::<Vec<_>>();
+
+    // Finalize the image.
+    writer.write_image_data(&simd_image_data).expect( "Invalid data");
+    writer.finish().expect( "Finalized" );
 }
 
-fn calculate_color(
-    pixel: MandlebrotPixel
-) -> u8 {
-    let mut x = 0.0;
-    let mut y = 0.0;
-    const max_iterations: u8 = 255;
-    let mut iteration = 0;
-    while x*x + y*y < 2.0*2.0 && iteration < max_iterations {
 
-        // Next pixel.
-        let temp: f64 = x*x - y*y + pixel.x_scaled;
-        y = 2.0*x*y + pixel.y_scaled;
-        x = temp;
+#[cfg(test)]
+mod tests {
 
-        iteration =  iteration + 1;
+    use super::*;
+    use test::Bencher;
+
+    /// Ensure both SIMD and scalar versions produce identical output.
+    #[test]
+    fn pixels_are_identical()
+    {
+        let width = 16;
+        let height = 16;
+        let simd_mandlebrot = crate::simd::Mandlebrot::new(width, height );
+        let scalar_mandlebrot = crate::scalar::Mandlebrot::new(width, height );
+        let mut scalar_iterator = scalar_mandlebrot.iter();
+        for simd_pixel in simd_mandlebrot.iter() {
+
+            let mut scalar_colors: [u8; 4] = [0, 0, 0, 0];
+            for i in 0..4 {
+
+                // Ensure the properties of the pixels are identical.
+                let scalar_pixel = scalar_iterator.next().unwrap();
+                assert_eq!( simd_pixel.x[ i ], scalar_pixel.x );
+                assert_eq!( simd_pixel.x_scaled[ i ], scalar_pixel.x_scaled );
+                assert_eq!( simd_pixel.y[ i ], scalar_pixel.y );
+                assert_eq!( simd_pixel.y_scaled[ i ], scalar_pixel.y_scaled );
+
+                scalar_colors[ i ] = crate::scalar::calculate_color( scalar_pixel );
+            }
+            let simd_colors = crate::simd::calculate_color( simd_pixel );
+            assert_eq!( simd_colors, scalar_colors);
+        }
     }
-    return iteration;
+
+    #[bench]
+    fn simd_benchmark(
+        b: &mut Bencher
+    ) {
+        b.iter( || {
+            // Benchmark the SIMD mandlebrot
+            let width = 256;
+            let height = 256;
+            let mut simd_mandlebrot = simd::Mandlebrot::new(width, height);
+            let simd_image_data = simd_mandlebrot.iter()
+                .flat_map(|mpixel| simd::calculate_color(mpixel))
+                .collect::<Vec<_>>();
+
+            // Require to value to prevent compiler optimizations.
+            test::black_box(simd_image_data);
+        } );
+    }
+
+    #[bench]
+    fn scalar_benchmark(
+        b: &mut Bencher
+    ) {
+        b.iter( || {
+
+            // Benchmark the SIMD mandlebrot
+            let width = 256;
+            let height = 256;
+            let mut scalar_mandlebrot = scalar::Mandlebrot::new(width, height);
+            test::black_box(scalar_mandlebrot.iter()
+                .map(|mpixel| scalar::calculate_color(mpixel))
+                .collect::<Vec<u8>>());
+        } );
+    }
 }
