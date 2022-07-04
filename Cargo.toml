@@ -1,5 +1,5 @@
 [package]
-name = "mandlebrot"
+name = "mandelbrot"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,6 +9,7 @@ edition = "2021"
     png = "0.17.5"
     rayon = "1.5.3"
     clap = { version = "3.2.8", features = ["derive"] }
+    num-traits = "0.2.15"
 
 [features]
     portable_simd = []
