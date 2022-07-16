@@ -19,14 +19,28 @@ pub struct Mandelbrot<T, const LANES: usize>
     /// Height of the final image in pixels.
     height: u32,
 
-    /// The size of the increment of each pixel in Mandelbrot scale in X-axis.
-    x_step: Simd<T, LANES>,
-
-    /// The size of the increment of each pixel in Mandelbrot scale in Y-axis.
-    y_step: Simd<T, LANES>,
+    /// Defines the size of a step in the mandelbrot grid.
+    step: MandelbrotGridStep<T, LANES>,
 
     /// Holds a scaled vector with initial values for the X-axis when the algorithm starts a new row.
     x_scale_start: Simd<T, LANES>,
+}
+
+struct MandelbrotGridStep<T, const LANES: usize>
+    where
+        T: MandelbrotGrid<LANES, GridType = T>,
+        T: SimdElement + PartialOrd,
+        LaneCount<LANES>: SupportedLaneCount,
+
+        // Require Add, Mul and Sub SIMD operator support
+        Simd<T, LANES>: Mul< Output  = Simd<T, LANES>> + Add< Output  = Simd<T, LANES>> + Sub< Output  = Simd<T, LANES>>
+{
+
+    /// The size of the increment of each pixel in Mandelbrot scale in X-axis.
+    x: Simd<T, LANES>,
+
+    /// The size of the increment of each pixel in Mandelbrot scale in Y-axis.
+    y: Simd<T, LANES>,
 }
 
 /// A pixel in Mandelbrot scale.
@@ -54,7 +68,26 @@ pub struct MandelbrotPixel<T, const LANES: usize>
 }
 
 /// An iterator that returns all the pixel for the Mandelbrot image.
-pub struct MandelbrotIterator<'a, T, const LANES: usize>
+pub struct MandelbrotIterator<'a, T, BOUNDS, const LANES: usize>
+    where
+        T: MandelbrotGrid<LANES, GridType = T, IteratorType = <T as SimdElement>::Mask>,
+        T: SimdElement + PartialOrd,
+        LaneCount<LANES>: SupportedLaneCount,
+        Simd<T, LANES>: Mul< Output  = Simd<T, LANES>> + Add< Output  = Simd<T, LANES>> + Sub< Output  = Simd<T, LANES>>,
+        Simd<<T as SimdElement>::Mask, LANES>: Add<Output=Simd<<T as SimdElement>::Mask, LANES>>,
+        BOUNDS: MandelbrotBounds<T, LANES>,
+{
+    /// Reference to the Mandelbrot parameters.
+    step: &'a MandelbrotGridStep<T, LANES>,
+
+    /// Reference to the Mandelbrot parameters.
+    bounds: &'a BOUNDS,
+
+    /// Next pixel returned by the iterator.
+    next_pixel: MandelbrotPixel<T, LANES>,
+}
+
+pub trait MandelbrotBounds<T, const LANES: usize>
     where
         T: MandelbrotGrid<LANES, GridType = T, IteratorType = <T as SimdElement>::Mask>,
         T: SimdElement + PartialOrd,
@@ -62,11 +95,30 @@ pub struct MandelbrotIterator<'a, T, const LANES: usize>
         Simd<T, LANES>: Mul< Output  = Simd<T, LANES>> + Add< Output  = Simd<T, LANES>> + Sub< Output  = Simd<T, LANES>>,
         Simd<<T as SimdElement>::Mask, LANES>: Add<Output=Simd<<T as SimdElement>::Mask, LANES>>
 {
-    /// Reference to the Mandelbrot parameters.
-    mandelbrot: &'a Mandelbrot<T, LANES>,
+    /// Returns X-coordinate of the bounded area.
+    fn x(
+        &self,
+    ) -> u32;
 
-    /// Next pixel returned by the iterator.
-    next_pixel: MandelbrotPixel<T, LANES>,
+    /// Returns the width of the bounded area.
+    fn width(
+        &self,
+    ) -> u32;
+
+    /// Returns the y-coordinate of the bounded area.
+    fn y(
+        &self,
+    ) -> u32;
+
+    /// Returns the height of the bounded area.
+    fn height(
+        &self,
+    ) -> u32;
+
+    /// Returns a scaled vector with initial values for the X-axis when the algorithm starts a new row.
+    fn x_scale_start(
+      &self
+    ) -> Simd<T, LANES>;
 }
 
 /// Defines the properties of the Mandelbrot grid for a number type used in the calculations.
@@ -190,7 +242,10 @@ impl<T, const LANES: usize> Mandelbrot<T, LANES>
         // Start.
        Ok(  Mandelbrot {
             width, height,
-            x_step, y_step,
+            step: MandelbrotGridStep {
+                x: x_step,
+                y: y_step,
+            },
             x_scale_start
         } )
     }
@@ -198,10 +253,11 @@ impl<T, const LANES: usize> Mandelbrot<T, LANES>
     /// Returns an iterator to the pixels in the Mandelbrot.
     pub fn iter(
         &self
-    ) -> MandelbrotIterator<T, LANES> {
+    ) -> MandelbrotIterator<T, Mandelbrot<T, LANES>, LANES> {
 
         MandelbrotIterator {
-            mandelbrot: self,
+            step: &self.step,
+            bounds: &self,
             next_pixel: MandelbrotPixel {
                 x: Mandelbrot::X_START, x_scaled: self.x_scale_start.clone(),
                 y: Simd::splat( 0 ), y_scaled: Simd::<T, LANES>::splat( <T as MandelbrotGrid<LANES>>::Y_MIN )
@@ -210,7 +266,7 @@ impl<T, const LANES: usize> Mandelbrot<T, LANES>
     }
 }
 
-impl<'a, T, const LANES: usize> MandelbrotIterator<'a, T, LANES>
+impl<T, const LANES: usize> MandelbrotBounds<T, LANES>for Mandelbrot<T, LANES>
     where
         T: MandelbrotGrid<LANES, GridType = T, IteratorType = <T as SimdElement>::Mask>,
         T: SimdElement + PartialOrd,
@@ -218,13 +274,61 @@ impl<'a, T, const LANES: usize> MandelbrotIterator<'a, T, LANES>
 
         // Require Add, Mul and Sub SIMD operator support
         Simd<T, LANES>: Mul< Output  = Simd<T, LANES>> + Add< Output  = Simd<T, LANES>> + Sub< Output  = Simd<T, LANES>>,
-        Simd<<T as SimdElement>::Mask, LANES>: Add<Output=Simd<<T as SimdElement>::Mask, LANES>>
+        Simd<<T as SimdElement>::Mask, LANES>: Add<Output=Simd<<T as SimdElement>::Mask, LANES>>,
+{
+    /// Returns X-coordinate of the bounded area.
+    fn x(
+        &self,
+    ) -> u32 {
+        0
+    }
+
+    /// Returns the width of the bounded area.
+    fn width(
+        &self,
+    ) -> u32 {
+        self.width
+    }
+
+    /// Returns the y-coordinate of the bounded area.
+    fn y(
+        &self,
+    ) -> u32 {
+        0
+    }
+
+    /// Returns the height of the bounded area.
+    fn height(
+        &self,
+    ) -> u32 {
+        self.height
+    }
+
+    /// Returns a scaled vector with initial values for the X-axis when the algorithm starts a new row.
+    fn x_scale_start(
+        &self
+    ) -> Simd<T, LANES> {
+        self.x_scale_start.clone()
+    }
+}
+
+impl<'a, T, BOUNDS, const LANES: usize> MandelbrotIterator<'a, T, BOUNDS, LANES>
+    where
+        T: MandelbrotGrid<LANES, GridType = T, IteratorType = <T as SimdElement>::Mask>,
+        T: SimdElement + PartialOrd,
+        LaneCount<LANES>: SupportedLaneCount,
+
+        // Require Add, Mul and Sub SIMD operator support
+        Simd<T, LANES>: Mul< Output  = Simd<T, LANES>> + Add< Output  = Simd<T, LANES>> + Sub< Output  = Simd<T, LANES>>,
+        Simd<<T as SimdElement>::Mask, LANES>: Add<Output=Simd<<T as SimdElement>::Mask, LANES>>,
+
+        BOUNDS: MandelbrotBounds<T, LANES>,
 {
     const X_PIXER_STEP: Simd<u32, LANES>  = Simd::splat( LANES as u32 );
     const Y_PIXER_STEP: Simd<u32, LANES>  = Simd::splat( 1 );
 }
 
-impl<'a, T, const LANES: usize> Iterator for MandelbrotIterator<'a, T, LANES>
+impl<'a, T, BOUNDS, const LANES: usize> Iterator for MandelbrotIterator<'a, T, BOUNDS, LANES>
     where
         T: MandelbrotGrid<LANES, GridType = T, IteratorType = <T as SimdElement>::Mask>,
         T: SimdElement + PartialOrd,
@@ -232,7 +336,9 @@ impl<'a, T, const LANES: usize> Iterator for MandelbrotIterator<'a, T, LANES>
 
         // Require Add, Mul and Sub SIMD operator support
         Simd<T, LANES>: Mul< Output  = Simd<T, LANES>> + Add< Output  = Simd<T, LANES>> + Sub< Output  = Simd<T, LANES>>,
-        Simd<<T as SimdElement>::Mask, LANES>: Add<Output=Simd<<T as SimdElement>::Mask, LANES>>
+        Simd<<T as SimdElement>::Mask, LANES>: Add<Output=Simd<<T as SimdElement>::Mask, LANES>>,
+
+        BOUNDS: MandelbrotBounds<T, LANES>,
 {
     type Item = MandelbrotPixel<T, LANES>;
 
@@ -241,28 +347,30 @@ impl<'a, T, const LANES: usize> Iterator for MandelbrotIterator<'a, T, LANES>
     fn next(&mut self) -> Option<Self::Item> {
 
         // Last pixel returned?
-        if self.next_pixel.y == Simd::splat( self.mandelbrot.height ) {
+        if self.next_pixel.y == Simd::splat( self.bounds.y() + self.bounds.height() ) {
             return None;
         };
 
         // Which axis to increment?
         let mut pixel;
-        if self.next_pixel.x[ LANES - 1 ] == self.mandelbrot.width - 1 {
+        if self.next_pixel.x[ LANES - 1 ] == self.bounds.x() + self.bounds.width() - 1 {
 
             // Next row, increase Y-axis.
             pixel = MandelbrotPixel {
                 x: Mandelbrot::X_START,
-                x_scaled: self.mandelbrot.x_scale_start.clone(),
-                y: &self.next_pixel.y + MandelbrotIterator::Y_PIXER_STEP,
-                y_scaled: Simd::splat( <T as MandelbrotGrid<LANES>>::Y_MIN ) + <T as MandelbrotGrid<LANES>>::to_grid( &(&self.next_pixel.y + MandelbrotIterator::Y_PIXER_STEP )) * self.mandelbrot.y_step.clone(),
+                x_scaled: self.bounds.x_scale_start(),
+                y: &self.next_pixel.y + MandelbrotIterator::<T, BOUNDS, LANES>::Y_PIXER_STEP,
+                y_scaled: Simd::splat( <T as MandelbrotGrid<LANES>>::Y_MIN ) + <T as MandelbrotGrid<LANES>>::to_grid(
+                        &(&self.next_pixel.y + MandelbrotIterator::<T, BOUNDS, LANES>::Y_PIXER_STEP )) * self.step.y.clone(),
             }
         }
         else {
 
             // Continue on the same row. Increase X-axis.
             pixel = MandelbrotPixel {
-                x: &self.next_pixel.x + MandelbrotIterator::X_PIXER_STEP,
-                x_scaled: <T as MandelbrotGrid<LANES>>::X_MIN_SIMD + <T as MandelbrotGrid<LANES>>::to_grid( &(&self.next_pixel.x + MandelbrotIterator::X_PIXER_STEP ) ) * self.mandelbrot.x_step.clone(),
+                x: &self.next_pixel.x + MandelbrotIterator::<T, BOUNDS, LANES>::X_PIXER_STEP,
+                x_scaled: <T as MandelbrotGrid<LANES>>::X_MIN_SIMD + <T as MandelbrotGrid<LANES>>::to_grid(
+                        &(&self.next_pixel.x + MandelbrotIterator::<T, BOUNDS, LANES>::X_PIXER_STEP ) ) * self.step.x.clone(),
                 y: self.next_pixel.y.clone(),
                 y_scaled: self.next_pixel.y_scaled.clone()
             }
