@@ -1,3 +1,4 @@
+use std::array::IntoIter;
 use std::ops::{Add, Mul, Sub};
 use std::simd::{Mask, MaskElement, Simd, SimdElement, LaneCount, SupportedLaneCount};
 
@@ -26,6 +27,15 @@ pub struct Mandelbrot<T, const LANES: usize>
     x_scale_start: Simd<T, LANES>,
 }
 
+pub struct Color<const LANES: usize> {
+
+    /// Position of the color value in the grid.
+    pub position: u64,
+
+    /// The color.
+    pub color: [u8; LANES]
+}
+
 struct MandelbrotGridStep<T, const LANES: usize>
     where
         T: MandelbrotGrid<LANES, GridType = T>,
@@ -41,6 +51,49 @@ struct MandelbrotGridStep<T, const LANES: usize>
 
     /// The size of the increment of each pixel in Mandelbrot scale in Y-axis.
     y: Simd<T, LANES>,
+}
+
+/// A tile or a window to the Mandelbrot grid.
+pub struct MandelbrotTile<'a, T, const LANES: usize>
+    where
+        T: MandelbrotGrid<LANES, GridType = T, IteratorType = <T as SimdElement>::Mask>,
+        T: SimdElement + PartialOrd,
+        LaneCount<LANES>: SupportedLaneCount,
+
+    // Require Add, Mul and Sub SIMD operator support
+    Simd<T, LANES>: Mul< Output  = Simd<T, LANES>> + Add< Output  = Simd<T, LANES>> + Sub< Output  = Simd<T, LANES>>
+{
+    /// Reference to the Mandelbrot parameters.
+    mandelbrot: &'a Mandelbrot<T, LANES>,
+
+    /// Width of the window in pixels.
+    width: u32,
+
+    /// X-coordinate of the relative bottom-left corner of the tile in the original grid.
+    x: u32,
+
+    /// Height of the window in image in pixels.
+    height: u32,
+
+    /// Y-coordinate of the relative bottom-left corner of the tile in the original grid.
+    y: u32,
+}
+
+/// An iterator that returns all the pixel for the Mandelbrot image.
+pub struct MandelbrotTileIterator<'a, T, B, const LANES: usize>
+    where
+        T: MandelbrotGrid<LANES, GridType = T, IteratorType = <T as SimdElement>::Mask>,
+        T: SimdElement + PartialOrd,
+        LaneCount<LANES>: SupportedLaneCount,
+        Simd<T, LANES>: Mul< Output  = Simd<T, LANES>> + Add< Output  = Simd<T, LANES>> + Sub< Output  = Simd<T, LANES>>,
+        Simd<<T as SimdElement>::Mask, LANES>: Add<Output=Simd<<T as SimdElement>::Mask, LANES>>,
+        B: MandelbrotBounds<T, LANES>,
+{
+    /// The area that is iterated over.
+    bounds: &'a B,
+
+    /// Next window returned by the iterator.
+    next_tile: MandelbrotTile<'a, T, LANES>,
 }
 
 /// A pixel in Mandelbrot scale.
@@ -67,8 +120,8 @@ pub struct MandelbrotPixel<T, const LANES: usize>
     pub y_scaled: Simd<T, LANES>,
 }
 
-/// An iterator that returns all the pixel for the Mandelbrot image.
-pub struct MandelbrotIterator<'a, T, BOUNDS, const LANES: usize>
+/// An iterator that returns all the pixel for Mandelbrot image.
+pub struct MandelbrotPixelIterator<'a, T, BOUNDS, const LANES: usize>
     where
         T: MandelbrotGrid<LANES, GridType = T, IteratorType = <T as SimdElement>::Mask>,
         T: SimdElement + PartialOrd,
@@ -215,7 +268,7 @@ impl<T, const LANES: usize> Mandelbrot<T, LANES>
         Simd<T, LANES>: Mul< Output  = Simd<T, LANES>> + Add< Output  = Simd<T, LANES>> + Sub< Output  = Simd<T, LANES>>,
         Simd<<T as SimdElement>::Mask, LANES>: Add<Output=Simd<<T as SimdElement>::Mask, LANES>>
 {
-    const X_START: Simd<u32, LANES> = Simd::from_array( get_x_start() );
+    const X_START: Simd<u32, LANES> = Simd::from_array( get_x_start( 0 ) );
 
     /// Initializes new image with the given parameters.
     pub fn new(
@@ -251,16 +304,47 @@ impl<T, const LANES: usize> Mandelbrot<T, LANES>
     }
 
     /// Returns an iterator to the pixels in the Mandelbrot.
-    pub fn iter(
+    #[allow(dead_code)]
+    pub fn iter_pixels(
         &self
-    ) -> MandelbrotIterator<T, Mandelbrot<T, LANES>, LANES> {
+    ) -> MandelbrotPixelIterator<T, Mandelbrot<T, LANES>, LANES> {
 
-        MandelbrotIterator {
+        MandelbrotPixelIterator {
             step: &self.step,
             bounds: &self,
             next_pixel: MandelbrotPixel {
                 x: Mandelbrot::X_START, x_scaled: self.x_scale_start.clone(),
                 y: Simd::splat( 0 ), y_scaled: Simd::<T, LANES>::splat( <T as MandelbrotGrid<LANES>>::Y_MIN )
+            },
+        }
+    }
+
+    /// Returns an iterator to the pixels in the Mandelbrot.
+    #[allow(dead_code)]
+    pub fn iter_tiles(
+        &self
+    ) -> MandelbrotTileIterator<T, Mandelbrot<T, LANES>, LANES> {
+
+        // Determine the maximum tile size.
+        // The tile size must be divisible with the size of the image to make it fit.
+        // Ideally each CPU will handle one tile.
+        let total_size = self.width * self.height;
+        let proposed_tile_size: u32 = total_size / num_cpus::get() as u32;
+        let total_tile_size = num::integer::gcd( total_size, proposed_tile_size );
+
+        // Calculate the number of tiles in each direction.
+        let tile_width = num::integer::gcd( self.width, total_tile_size );
+        let x_tiles = self.width / tile_width;
+        let y_tiles = total_tile_size / ( x_tiles * tile_width );
+        let y_tiles = num::integer::gcd( self.height, y_tiles );
+        let tile_height = self.height / y_tiles;
+
+        MandelbrotTileIterator {
+            bounds: self,
+            next_tile: MandelbrotTile {
+                mandelbrot: self,
+                x: 0, width: tile_width,
+                y: 0, height: tile_height,
             },
         }
     }
@@ -274,7 +358,7 @@ impl<T, const LANES: usize> MandelbrotBounds<T, LANES>for Mandelbrot<T, LANES>
 
         // Require Add, Mul and Sub SIMD operator support
         Simd<T, LANES>: Mul< Output  = Simd<T, LANES>> + Add< Output  = Simd<T, LANES>> + Sub< Output  = Simd<T, LANES>>,
-        Simd<<T as SimdElement>::Mask, LANES>: Add<Output=Simd<<T as SimdElement>::Mask, LANES>>,
+        Simd<<T as SimdElement>::Mask, LANES>: Add<Output=Simd<<T as SimdElement>::Mask, LANES>>
 {
     /// Returns X-coordinate of the bounded area.
     fn x(
@@ -304,7 +388,7 @@ impl<T, const LANES: usize> MandelbrotBounds<T, LANES>for Mandelbrot<T, LANES>
         self.height
     }
 
-    /// Returns a scaled vector with initial values for the X-axis when the algorithm starts a new row.
+    // Returns a scaled vector with initial values for the X-axis when the algorithm starts a new row.
     fn x_scale_start(
         &self
     ) -> Simd<T, LANES> {
@@ -312,7 +396,156 @@ impl<T, const LANES: usize> MandelbrotBounds<T, LANES>for Mandelbrot<T, LANES>
     }
 }
 
-impl<'a, T, BOUNDS, const LANES: usize> MandelbrotIterator<'a, T, BOUNDS, LANES>
+impl<const LANES: usize> IntoIterator for Color<LANES>
+{
+    type Item = u8;
+    type IntoIter = IntoIter<u8, LANES>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.color.into_iter()
+    }
+}
+
+impl<'a, T, const LANES: usize> MandelbrotTile<'a, T, LANES>
+    where
+        T: MandelbrotGrid<LANES, GridType = T, IteratorType = <T as SimdElement>::Mask>,
+        T: SimdElement + PartialOrd,
+        LaneCount<LANES>: SupportedLaneCount,
+
+        // Require Add, Mul and Sub SIMD operator support
+        Simd<T, LANES>: Mul< Output  = Simd<T, LANES>> + Add< Output  = Simd<T, LANES>> + Sub< Output  = Simd<T, LANES>>,
+        Simd<<T as SimdElement>::Mask, LANES>: Add<Output=Simd<<T as SimdElement>::Mask, LANES>>
+{
+    /// Iterates the pixels of this tile.
+    pub fn iter_pixels(
+        &self,
+    ) -> MandelbrotPixelIterator<T, MandelbrotTile<'a, T, LANES>, LANES > {
+
+        // Calculate X and Y coordinates.
+        let x = Simd::from_array( get_x_start( self.x ) );
+        let y_min = Simd::splat( <T as MandelbrotGrid<LANES>>::Y_MIN );
+        let y = Simd::splat( self.y );
+
+        let next_pixel = MandelbrotPixel {
+            x,
+            y,
+            x_scaled: <T as MandelbrotGrid<LANES>>::X_MIN_SIMD + <T as MandelbrotGrid<LANES>>::to_grid(&x) * self.mandelbrot.step.x.clone(),
+            y_scaled: y_min + <T as MandelbrotGrid<LANES>>::to_grid(&y) * self.mandelbrot.step.y.clone(),
+        };
+
+        MandelbrotPixelIterator {
+            step: &self.mandelbrot.step,
+            bounds: self,
+            next_pixel,
+        }
+
+    }
+}
+
+impl<'a, T, const LANES: usize> MandelbrotBounds<T, LANES>for MandelbrotTile<'a, T, LANES>
+    where
+        T: MandelbrotGrid<LANES, GridType = T, IteratorType = <T as SimdElement>::Mask>,
+        T: SimdElement + PartialOrd,
+        LaneCount<LANES>: SupportedLaneCount,
+
+    // Require Add, Mul and Sub SIMD operator support
+        Simd<T, LANES>: Mul< Output  = Simd<T, LANES>> + Add< Output  = Simd<T, LANES>> + Sub< Output  = Simd<T, LANES>>,
+        Simd<<T as SimdElement>::Mask, LANES>: Add<Output=Simd<<T as SimdElement>::Mask, LANES>>
+{
+    /// Returns X-coordinate of the bounded area.
+    fn x(
+        &self,
+    ) -> u32 {
+        self.x
+    }
+
+    /// Returns the width of the bounded area.
+    fn width(
+        &self,
+    ) -> u32 {
+        self.width
+    }
+
+    /// Returns the y-coordinate of the bounded area.
+    fn y(
+        &self,
+    ) -> u32 {
+        self.y
+    }
+
+    /// Returns the height of the bounded area.
+    fn height(
+        &self,
+    ) -> u32 {
+        self.height
+    }
+
+    // Returns a scaled vector with initial values for the X-axis when the algorithm starts a new row.
+    fn x_scale_start(
+        &self
+    ) -> Simd<T, LANES> {
+        &self.mandelbrot.x_scale_start + ( &self.mandelbrot.step.x * <T as MandelbrotGrid<LANES>>::to_grid( &Simd::splat( self.x ) ) )
+    }
+}
+
+impl<'a, T, B, const LANES: usize> Iterator for MandelbrotTileIterator<'a, T, B, LANES>
+    where
+        T: MandelbrotGrid<LANES, GridType = T, IteratorType = <T as SimdElement>::Mask>,
+        T: SimdElement + PartialOrd,
+        LaneCount<LANES>: SupportedLaneCount,
+
+        // Require Add, Mul and Sub SIMD operator support
+        Simd<T, LANES>: Mul< Output  = Simd<T, LANES>> + Add< Output  = Simd<T, LANES>> + Sub< Output  = Simd<T, LANES>>,
+        Simd<<T as SimdElement>::Mask, LANES>: Add<Output=Simd<<T as SimdElement>::Mask, LANES>>,
+        B: MandelbrotBounds<T, LANES>,
+{
+    type Item = MandelbrotTile<'a, T, LANES>;
+
+
+    /// Gets a vector of the next tiles that fills the image grid.
+    fn next(&mut self) -> Option<Self::Item> {
+
+        // Last tile  returned?
+        if self.next_tile.y == self.bounds.y() + self.bounds.height() {
+            return None;
+        };
+
+        // Which axis to increment?
+        let mut tile;
+        if self.next_tile.x + self.next_tile.width == self.bounds.x() + self.bounds.width() {
+
+            // Next row, increase Y-axis.
+            tile = MandelbrotTile {
+                mandelbrot: self.next_tile.mandelbrot,
+                x: 0,
+                width: self.next_tile.width,
+                y: self.next_tile.y + self.next_tile.height,
+                height: self.next_tile.height,
+            }
+        }
+        else {
+
+            // Continue on the same row. Increase X-axis.
+            tile = MandelbrotTile {
+                mandelbrot: self.next_tile.mandelbrot,
+                x: self.next_tile.x + self.next_tile.width,
+                width: self.next_tile.width,
+                y: self.next_tile.y,
+                height: self.next_tile.height,
+            }
+        }
+
+        // Grab the tile we will return.
+        // By storing the value of the next tile instead of the previous tile it was possible
+        // to initialize the generator without Option.
+        std::mem::swap(&mut tile, &mut self.next_tile );
+
+        // Return the tile.
+        return Some(tile);
+    }
+}
+
+impl<'a, T, BOUNDS, const LANES: usize> MandelbrotPixelIterator<'a, T, BOUNDS, LANES>
     where
         T: MandelbrotGrid<LANES, GridType = T, IteratorType = <T as SimdElement>::Mask>,
         T: SimdElement + PartialOrd,
@@ -328,7 +561,7 @@ impl<'a, T, BOUNDS, const LANES: usize> MandelbrotIterator<'a, T, BOUNDS, LANES>
     const Y_PIXER_STEP: Simd<u32, LANES>  = Simd::splat( 1 );
 }
 
-impl<'a, T, BOUNDS, const LANES: usize> Iterator for MandelbrotIterator<'a, T, BOUNDS, LANES>
+impl<'a, T, BOUNDS, const LANES: usize> Iterator for MandelbrotPixelIterator<'a, T, BOUNDS, LANES>
     where
         T: MandelbrotGrid<LANES, GridType = T, IteratorType = <T as SimdElement>::Mask>,
         T: SimdElement + PartialOrd,
@@ -353,24 +586,26 @@ impl<'a, T, BOUNDS, const LANES: usize> Iterator for MandelbrotIterator<'a, T, B
 
         // Which axis to increment?
         let mut pixel;
-        if self.next_pixel.x[ LANES - 1 ] == self.bounds.x() + self.bounds.width() - 1 {
+        let x_boundary = self.bounds.x() + self.bounds.width();
+        assert!( self.next_pixel.x[ LANES - 1 ] < x_boundary );
+        if self.next_pixel.x[ LANES - 1 ] == x_boundary - 1 {
 
             // Next row, increase Y-axis.
             pixel = MandelbrotPixel {
-                x: Mandelbrot::X_START,
+                x: Simd::from_array( get_x_start( self.bounds.x() ) ),
                 x_scaled: self.bounds.x_scale_start(),
-                y: &self.next_pixel.y + MandelbrotIterator::<T, BOUNDS, LANES>::Y_PIXER_STEP,
+                y: &self.next_pixel.y + MandelbrotPixelIterator::<T, BOUNDS, LANES>::Y_PIXER_STEP,
                 y_scaled: Simd::splat( <T as MandelbrotGrid<LANES>>::Y_MIN ) + <T as MandelbrotGrid<LANES>>::to_grid(
-                        &(&self.next_pixel.y + MandelbrotIterator::<T, BOUNDS, LANES>::Y_PIXER_STEP )) * self.step.y.clone(),
+                        &(&self.next_pixel.y + MandelbrotPixelIterator::<T, BOUNDS, LANES>::Y_PIXER_STEP )) * self.step.y.clone(),
             }
         }
         else {
 
             // Continue on the same row. Increase X-axis.
             pixel = MandelbrotPixel {
-                x: &self.next_pixel.x + MandelbrotIterator::<T, BOUNDS, LANES>::X_PIXER_STEP,
+                x: &self.next_pixel.x + MandelbrotPixelIterator::<T, BOUNDS, LANES>::X_PIXER_STEP,
                 x_scaled: <T as MandelbrotGrid<LANES>>::X_MIN_SIMD + <T as MandelbrotGrid<LANES>>::to_grid(
-                        &(&self.next_pixel.x + MandelbrotIterator::<T, BOUNDS, LANES>::X_PIXER_STEP ) ) * self.step.x.clone(),
+                        &(&self.next_pixel.x + MandelbrotPixelIterator::<T, BOUNDS, LANES>::X_PIXER_STEP ) ) * self.step.x.clone(),
                 y: self.next_pixel.y.clone(),
                 y_scaled: self.next_pixel.y_scaled.clone()
             }
@@ -380,6 +615,8 @@ impl<'a, T, BOUNDS, const LANES: usize> Iterator for MandelbrotIterator<'a, T, B
         // By storing the value of the next pixel instead of the previous pixel it was possible
         // to initialize the generator without Option.
         std::mem::swap( &mut pixel, &mut self.next_pixel );
+
+        assert!( pixel.x[ 0 ] != pixel.x[ 1 ] );
 
         // Return the pixel.
         return Some( pixel );
@@ -531,7 +768,7 @@ impl<const LANES: usize> MandelbrotGrid<LANES> for f32
 /// Calculates the colors for the pixel represented by the input.
 pub fn calculate_color<T, const LANES: usize>(
     pixel: MandelbrotPixel<T, LANES>
-) -> [u8; LANES]
+) -> Color<LANES>
     where
         T: MandelbrotGrid<LANES, GridType = T, IteratorType = <T as SimdElement>::Mask>,
         T: SimdElement + PartialOrd,
@@ -569,16 +806,43 @@ pub fn calculate_color<T, const LANES: usize>(
         x = temp;
     }
 
-    return iteration.to_array().map( |value| <T as MandelbrotGrid<LANES>>::iteration_to_color( value ) );
+    // Calculate the position and the final color.
+    let position: u64 = ( pixel.y[ 0 ] as u64 ) << 32;
+    let position = position + ( pixel.x [ 0 ] as u64 );
+    let color =iteration.to_array().map( |value| <T as MandelbrotGrid<LANES>>::iteration_to_color( value ) );
+
+    return Color {
+        position,
+        color
+    }
 }
 
 /// Initializes first lane for the x pixel at the beginning of of a row.
-const fn get_x_start<const LANES: usize>() -> [u32; LANES] {
+const fn get_x_start<const LANES: usize>(
+    x: u32
+) -> [u32; LANES] {
     let mut output: [u32; LANES] = [0; LANES];
-    let mut l  = 0;
-    while l < LANES {
-        output[ l ] = l as u32;
+    let mut l  = x as usize;
+    while l < LANES + x as usize {
+        output[ l - x as usize ] = l as u32;
         l += 1;
     }
     output
+}
+
+mod tests {
+
+    use super::*;
+
+    #[test]
+    fn get_x_start_returns_appropriate_vector()
+    {
+        let test_vectors = [ ( 0, [ 0, 1, 2, 3 ] ), ( 4, [ 4, 5, 6, 7 ] )];
+        for test in test_vectors {
+
+            let result = get_x_start( test.0 );
+            assert_eq!( result, test.1 );
+        }
+    }
+
 }

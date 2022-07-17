@@ -52,14 +52,7 @@ fn main() {
 
     // Calculate color for each pixel.
     let simd_mandelbrot = simd::Mandelbrot::<f64, 4>::new(width, height ).unwrap();
-    let mut pixel_index = 0;
-    let simd_image_data= simd_mandelbrot.iter()
-
-        // Specify index for each individual pixel.
-        .map( |pixel| {
-            pixel_index += 1;
-            ( pixel_index, pixel )
-        } );
+    let simd_image_data= simd_mandelbrot.iter_tiles();
 
     // Calculate the results in parallel or sequentially.
     let mut simd_image_data = if args.parallel {
@@ -68,20 +61,22 @@ fn main() {
         simd_image_data.par_bridge()
 
             // Calculate color for each pixel.
-            .map(|pixel| (pixel.0, simd::calculate_color( pixel.1 ) ) )
+            .flat_map( |tile| tile.iter_pixels().collect::<Vec<_>>() )
+            .map(|pixel| simd::calculate_color( pixel ) )
             .collect::<Vec<_>>()
     }
      else {
          // Calculate color for each pixel.
-         simd_image_data.map(|pixel| (pixel.0, simd::calculate_color( pixel.1 ) ) )
-             .collect::<Vec<_>>()
+         simd_image_data.flat_map( |tile| tile.iter_pixels().collect::<Vec<_>>() )
+            .map(|pixel| simd::calculate_color( pixel ) )
+            .collect::<Vec<_>>()
      };
 
     // The parallel calculation above trashes the original order.
     // Sort the result to generate the final output.
-    simd_image_data.par_sort_by( |a, b| a.0.partial_cmp( &b.0 ).unwrap() );
+    simd_image_data.par_sort_by( |a, b| a.position.partial_cmp( &b.position ).unwrap() );
     let simd_image_data = simd_image_data.into_iter()
-        .flat_map( |mpixel| mpixel.1 )
+        .flat_map( |mpixel| mpixel )
         .collect::<Vec<_>>();
 
     // Finalize the image.
@@ -111,7 +106,8 @@ mod tests {
                     crate::simd::Mandelbrot::<f64, LANES>::new(width, height ).unwrap();
             let scalar_mandelbrot = crate::scalar::Mandelbrot::new(width, height );
             let mut scalar_iterator = scalar_mandelbrot.iter();
-            for simd_pixel in simd_mandelbrot.iter() {
+            let mut image = Vec::new();
+            for simd_pixel in simd_mandelbrot.iter_pixels() {
 
                 let mut scalar_colors: [u8; LANES] = [0, 0, 0, 0];
                 for i in 0..LANES {
@@ -126,8 +122,30 @@ mod tests {
                     scalar_colors[ i ] = crate::scalar::calculate_color( scalar_pixel );
                 }
                 let simd_colors = crate::simd::calculate_color( simd_pixel );
-                assert_eq!( simd_colors, scalar_colors);
+                assert_eq!( simd_colors.color, scalar_colors);
+                image.extend_from_slice( &scalar_colors );
             }
+
+            let simd_mandelbrot =
+                simd::Mandelbrot::<f32, 4>::new(width, height).unwrap();
+            let mut simd_image_data= simd_mandelbrot.iter_tiles()
+
+                // Enable parallelism
+                .par_bridge()
+
+                // Calculate color for each pixel.
+                .flat_map( |tile| tile.iter_pixels().collect::<Vec<_>>() )
+                .map(|pixel| simd::calculate_color( pixel ) )
+                .collect::<Vec<_>>();
+
+            // The parallel calculation above trashes the original order.
+            // Sort the result to generate the final output.
+            simd_image_data.par_sort_by( |a, b| a.position.partial_cmp( &b.position ).unwrap() );
+            let simd_image_data = simd_image_data.into_iter()
+                .flat_map( |mpixel| mpixel )
+                .collect::<Vec<_>>();
+            assert_eq!( simd_image_data.len(), image.len() );
+            assert_eq!( simd_image_data, image );
         }
     }
 
@@ -141,7 +159,7 @@ mod tests {
             let height = 256;
             let simd_mandelbrot =
                     simd::Mandelbrot::<f32, 2>::new(width, height).unwrap();
-            let simd_image_data = simd_mandelbrot.iter()
+            let simd_image_data = simd_mandelbrot.iter_pixels()
                 .flat_map(|mpixel| simd::calculate_color(mpixel))
                 .collect::<Vec<_>>();
 
@@ -160,8 +178,8 @@ mod tests {
             let height = 256;
             let simd_mandelbrot =
                     simd::Mandelbrot::<f32, 4>::new(width, height).unwrap();
-            let simd_image_data = simd_mandelbrot.iter()
-                .flat_map(|mpixel| simd::calculate_color(mpixel))
+            let simd_image_data = simd_mandelbrot.iter_pixels()
+                .flat_map(|mpixel| simd::calculate_color(mpixel) )
                 .collect::<Vec<_>>();
 
             // Require to value to prevent compiler optimizations.
@@ -170,7 +188,7 @@ mod tests {
     }
 
     #[bench]
-    fn simd_f32x4_parallel_benchmark(
+    fn simd_f32x4_parallel_pixels_benchmark(
         b: &mut Bencher
     ) {
         b.iter( || {
@@ -179,28 +197,53 @@ mod tests {
             let height = 256;
             let simd_mandelbrot =
                     simd::Mandelbrot::<f32, 4>::new(width, height).unwrap();
-            let mut pixel_index = 0;
-            let mut simd_image_data= simd_mandelbrot.iter()
-
-                    // Specify index for each individual pixel.
-                    .map( |pixel| {
-                        pixel_index += 1;
-                        ( pixel_index, pixel )
-                    } )
+            let mut simd_image_data= simd_mandelbrot.iter_pixels()
 
                     // Enable parallelism
                     .par_bridge()
 
                     // Calculate color for each pixel.
-                    .map(|pixel| (pixel.0, simd::calculate_color( pixel.1 ) ) )
+                    .map(|pixel| simd::calculate_color( pixel ) )
                     .collect::<Vec<_>>();
 
             // The parallel calculation above trashes the original order.
             // Sort the result to generate the final output.
-            simd_image_data.par_sort_by( |a, b| a.0.partial_cmp( &b.0 ).unwrap() );
+            simd_image_data.par_sort_by( |a, b| a.position.partial_cmp( &b.position ).unwrap() );
             let simd_image_data = simd_image_data.into_iter()
-                    .flat_map( |mpixel| mpixel.1 )
+                    .flat_map( |mpixel| mpixel )
                     .collect::<Vec<_>>();
+
+            // Require to value to prevent compiler optimizations.
+            test::black_box(simd_image_data);
+        } );
+    }
+
+    #[bench]
+    fn simd_f32x4_parallel_tiles_benchmark(
+        b: &mut Bencher
+    ) {
+        b.iter( || {
+            // Benchmark the SIMD mandelbrot
+            let width = 256;
+            let height = 256;
+            let simd_mandelbrot =
+                simd::Mandelbrot::<f32, 4>::new(width, height).unwrap();
+            let mut simd_image_data= simd_mandelbrot.iter_tiles()
+
+                // Enable parallelism
+                .par_bridge()
+
+                // Calculate color for each pixel.
+                .flat_map( |tile| tile.iter_pixels().collect::<Vec<_>>() )
+                .map(|pixel| simd::calculate_color( pixel ) )
+                .collect::<Vec<_>>();
+
+            // The parallel calculation above trashes the original order.
+            // Sort the result to generate the final output.
+            simd_image_data.par_sort_by( |a, b| a.position.partial_cmp( &b.position ).unwrap() );
+            let simd_image_data = simd_image_data.into_iter()
+                .flat_map( |mpixel| mpixel )
+                .collect::<Vec<_>>();
 
             // Require to value to prevent compiler optimizations.
             test::black_box(simd_image_data);
@@ -217,7 +260,7 @@ mod tests {
             let height = 256;
             let simd_mandelbrot =
                     simd::Mandelbrot::<f32, 4>::new(width, height).unwrap();
-            let simd_image_data = simd_mandelbrot.iter()
+            let simd_image_data = simd_mandelbrot.iter_pixels()
                 .flat_map(|mpixel| simd::calculate_color(mpixel))
                 .collect::<Vec<_>>();
 
@@ -236,7 +279,7 @@ mod tests {
             let height = 256;
             let simd_mandelbrot =
                     simd::Mandelbrot::<f64, 2>::new(width, height).unwrap();
-            let simd_image_data = simd_mandelbrot.iter()
+            let simd_image_data = simd_mandelbrot.iter_pixels()
                 .flat_map(|mpixel| simd::calculate_color(mpixel))
                 .collect::<Vec<_>>();
 
@@ -254,7 +297,7 @@ mod tests {
             let width = 256;
             let height = 256;
             let simd_mandelbrot = simd::Mandelbrot::<f64, 4>::new(width, height).unwrap();
-            let simd_image_data = simd_mandelbrot.iter()
+            let simd_image_data = simd_mandelbrot.iter_pixels()
                 .flat_map(|mpixel| simd::calculate_color(mpixel))
                 .collect::<Vec<_>>();
 

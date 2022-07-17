@@ -10,6 +10,8 @@ edition = "2021"
     rayon = "1.5.3"
     clap = { version = "3.2.8", features = ["derive"] }
     num-traits = "0.2.15"
+    num = "0.4.0"
+    num_cpus = "1.13.1"
 
 [features]
     portable_simd = []
