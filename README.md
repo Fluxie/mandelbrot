@@ -31,7 +31,6 @@ This assumes no previous knowledge of Rust.
 
 ## TODO
 * Increase the color depth to 16-bits.
-* Enable reasonable parallelism. Currently, the work is divided into too many small pieces.
 
 ## Remarks
 
