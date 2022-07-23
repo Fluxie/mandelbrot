@@ -29,9 +29,6 @@ This assumes no previous knowledge of Rust.
 4. Run tests: "cargo test"
 5. Run the Mandlebrot visualizer "cargo run --release"
 
-## TODO
-* Increase the color depth to 16-bits.
-
 ## Remarks
 
 This project was an exercise to Rust SIMD for the author.
