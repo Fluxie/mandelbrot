@@ -27,13 +27,16 @@ pub struct Mandelbrot<T, const LANES: usize>
     x_scale_start: Simd<T, LANES>,
 }
 
-pub struct Color<const LANES: usize> {
+pub struct Color<C, const LANES: usize>
+    where
+        C: ColorDepth<ColorType=C>
+{
 
     /// Position of the color value in the grid.
     pub position: u64,
 
     /// The color.
-    pub color: [u8; LANES]
+    pub color: [C; LANES]
 }
 
 struct MandelbrotGridStep<T, const LANES: usize>
@@ -140,6 +143,23 @@ pub struct MandelbrotPixelIterator<'a, T, BOUNDS, const LANES: usize>
     next_pixel: MandelbrotPixel<T, LANES>,
 }
 
+/// Defines information about the depth of the color.
+pub trait ColorDepth {
+
+    type ColorType;
+
+    /// Maximum number of iterations this color supports.
+    const MAX_SUPPORTED_ITERATIONS: u32;
+
+    /// The default scaling for the color depth.
+    const DEFAULT_SCALING_FACTOR: u32;
+
+    /// Scales the color.
+    fn scale_color(
+        unscaled_color: u32,
+    ) -> Self::ColorType;
+}
+
 pub trait MandelbrotBounds<T, const LANES: usize>
     where
         T: MandelbrotGrid<LANES, GridType = T, IteratorType = <T as SimdElement>::Mask>,
@@ -210,9 +230,6 @@ where
     /// Vector of lanes each defining the value of the Mandelbrot condition.
     const MANDELBROT_CONDITION: Simd<Self::GridType, LANES>;
 
-    /// The maximum number of iterations to to calculate the series.
-    const MAX_ITERATIONS: Self::IteratorType;
-
     /// A vector of zeros for starting the iteration.
     const ZERO_ITERATIONS: Simd<Self::IteratorType, LANES>;
 
@@ -234,15 +251,20 @@ where
         value: &Simd<u32, LANES>
     ) -> Simd<Self::GridType, LANES>;
 
+    /// Converts the given input vector into iteration type.
+    fn to_iteration(
+        value: &Simd<u32, LANES>
+    ) -> Simd<Self::IteratorType, LANES>;
+
     /// Converts the reached iteration value into a grayscale color value.
-    fn iteration_to_color(
+    fn iteration_to_unscaled_color(
         iteration: <Self::GridType as SimdElement>::Mask
-    ) -> u8;
+    ) -> u32;
 
     /// Returns the maximum value of a lane in the given iteration.
     fn reduce_max_iteration(
         iteration: &Simd<Self::IteratorType, LANES>
-    ) -> Self::IteratorType;
+    ) -> u32;
 
     /// The lanes product X and Y axis pixels to the lanes of the Mandelbrot condition.
     fn lanes_lt(
@@ -396,10 +418,12 @@ impl<T, const LANES: usize> MandelbrotBounds<T, LANES>for Mandelbrot<T, LANES>
     }
 }
 
-impl<const LANES: usize> IntoIterator for Color<LANES>
+impl<C, const LANES: usize> IntoIterator for Color<C, LANES>
+    where
+        C: ColorDepth<ColorType=C>
 {
-    type Item = u8;
-    type IntoIter = IntoIter<u8, LANES>;
+    type Item = C;
+    type IntoIter = IntoIter<C, LANES>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.color.into_iter()
@@ -643,7 +667,6 @@ impl<const LANES: usize> MandelbrotGrid<LANES> for f64
     const TWO: Simd<f64, LANES> = Simd::splat( 2.0 );
     const MANDELBROT_CONDITION: Simd<f64, LANES> = Simd::splat( 2.0 * 2.0 );
 
-    const MAX_ITERATIONS: i64 = 255;
     const ZERO_ITERATIONS: Simd<i64, LANES> = Simd::splat( 0 );
     const ITERATION_INCREMENT: Simd<i64, LANES> = Simd::splat( 1 );
 
@@ -666,16 +689,24 @@ impl<const LANES: usize> MandelbrotGrid<LANES> for f64
         let integers = value.to_array();
         Simd::from_slice( &integers.map( |i| i as f64 ) )
     }
-    fn iteration_to_color(
+
+    fn to_iteration(
+        value: &Simd<u32, LANES>
+    ) -> Simd<i64, LANES> {
+        let integers = value.to_array();
+        Simd::from_slice( &integers.map( |i| i as i64 ) )
+    }
+
+    fn iteration_to_unscaled_color(
         iteration: i64
-    ) -> u8 {
-        iteration as u8
+    ) -> u32 {
+        iteration as u32
     }
 
     fn reduce_max_iteration(
         iteration: &Simd<i64, LANES>
-    ) -> i64 {
-        iteration.reduce_max()
+    ) -> u32 {
+        iteration.reduce_max() as u32
     }
 
     fn lanes_lt(
@@ -714,7 +745,6 @@ impl<const LANES: usize> MandelbrotGrid<LANES> for f32
     const TWO: Simd<f32, LANES> = Simd::splat( 2.0 );
     const MANDELBROT_CONDITION: Simd<f32, LANES> = Simd::splat( 2.0 * 2.0 );
 
-    const MAX_ITERATIONS: i32 = 255;
     const ZERO_ITERATIONS: Simd<i32, LANES> = Simd::splat( 0 );
     const ITERATION_INCREMENT: Simd<i32, LANES> = Simd::splat( 1 );
 
@@ -737,16 +767,24 @@ impl<const LANES: usize> MandelbrotGrid<LANES> for f32
         let integers = value.to_array();
         Simd::from_slice( &integers.map( |i| i as f32 ) )
     }
-    fn iteration_to_color(
+
+    fn to_iteration(
+        value: &Simd<u32, LANES>
+    ) -> Simd<i32, LANES> {
+        let integers = value.to_array();
+        Simd::from_slice( &integers.map( |i| i as i32 ) )
+    }
+
+    fn iteration_to_unscaled_color(
         iteration: i32
-    ) -> u8 {
-        iteration as u8
+    ) -> u32 {
+        iteration as u32
     }
 
     fn reduce_max_iteration(
         iteration: &Simd<i32, LANES>
-    ) -> i32 {
-        iteration.reduce_max()
+    ) -> u32 {
+        iteration.reduce_max() as u32
     }
 
     fn lanes_lt(
@@ -765,14 +803,72 @@ impl<const LANES: usize> MandelbrotGrid<LANES> for f32
     }
 }
 
+impl ColorDepth for u8 {
+    
+    type ColorType = u8;
+
+    const MAX_SUPPORTED_ITERATIONS: u32 = ( u8::MAX ) as u32;
+
+    /// The default scaling for the color depth.
+    const DEFAULT_SCALING_FACTOR: u32 = 1;
+
+    /// Scales the color.
+    fn scale_color(
+        unscaled_color: u32,
+    ) -> u8 {
+        std::cmp::min( unscaled_color, u8::MAX as u32  ) as u8
+    }
+}
+
+impl ColorDepth for u16 {
+
+    type ColorType = u16;
+
+    const MAX_SUPPORTED_ITERATIONS: u32 = ( u16::MAX ) as u32;
+
+    /// The default scaling for the color depth.
+    /// TODO: For prettier images the color scaling should probably be larger at the beginning of the series.
+    /// This way even small increase in the number of iterations would be visible in the final image.
+    /// I.e. the scaling should not be linear.
+    const DEFAULT_SCALING_FACTOR: u32 = 64;
+
+    /// Scales the color.
+    fn scale_color(
+        unscaled_color: u32,
+    ) -> u16 {
+        std::cmp::min( unscaled_color, u16::MAX as u32  ) as u16
+    }
+}
+
 /// Calculates the colors for the pixel represented by the input.
-pub fn calculate_color<T, const LANES: usize>(
-    pixel: MandelbrotPixel<T, LANES>
-) -> Color<LANES>
+pub fn calculate_color<C, T, const LANES: usize>(
+    pixel: MandelbrotPixel<T, LANES>,
+) -> Color<C, LANES>
     where
         T: MandelbrotGrid<LANES, GridType = T, IteratorType = <T as SimdElement>::Mask>,
         T: SimdElement + PartialOrd,
         LaneCount<LANES>: SupportedLaneCount,
+        C: ColorDepth<ColorType = C>,
+
+    // Require Add, Mul and Sub SIMD operator support
+        Simd<T, LANES>: Mul< Output  = Simd<T, LANES>> + Add< Output  = Simd<T, LANES>> + Sub< Output  = Simd<T, LANES>>,
+        Simd<<T as SimdElement>::Mask, LANES>: Add<Output=Simd<<T as SimdElement>::Mask, LANES>>,
+        <T as SimdElement>::Mask: Eq + Ord
+{
+    let max_iterations: u32 = <C as ColorDepth>::MAX_SUPPORTED_ITERATIONS / <C as ColorDepth>::DEFAULT_SCALING_FACTOR;
+    calculate_color_with_iterations( pixel, max_iterations )
+}
+
+/// Calculates the colors for the pixel represented by the input.
+pub fn calculate_color_with_iterations<C, T, const LANES: usize>(
+    pixel: MandelbrotPixel<T, LANES>,
+    max_iterations: u32,
+) -> Color<C, LANES>
+    where
+        T: MandelbrotGrid<LANES, GridType = T, IteratorType = <T as SimdElement>::Mask>,
+        T: SimdElement + PartialOrd,
+        LaneCount<LANES>: SupportedLaneCount,
+        C: ColorDepth<ColorType = C>,
 
         // Require Add, Mul and Sub SIMD operator support
         Simd<T, LANES>: Mul< Output  = Simd<T, LANES>> + Add< Output  = Simd<T, LANES>> + Sub< Output  = Simd<T, LANES>>,
@@ -782,12 +878,15 @@ pub fn calculate_color<T, const LANES: usize>(
     let mut x: Simd<T, LANES> = <T as MandelbrotGrid<LANES>>::ZERO.clone();
     let mut y: Simd<T, LANES> = <T as MandelbrotGrid<LANES>>::ZERO.clone();
     let mut iteration = <T as MandelbrotGrid<LANES>>::ZERO_ITERATIONS;
+    let scaling_factor = <C as ColorDepth>::MAX_SUPPORTED_ITERATIONS / max_iterations;
+    let iteration_increment = Simd::splat( scaling_factor );
+    let iteration_increment = <T as MandelbrotGrid<LANES>>::to_iteration( &iteration_increment );
     loop  {
 
         // Iterations exhausted?
         // Only some of the lanes may reach this point if the series of the associated pixel goes past
         // the Mandelbrot condition.
-        if <T as MandelbrotGrid<LANES>>::reduce_max_iteration( &iteration ) >= <T as MandelbrotGrid<LANES>>::MAX_ITERATIONS {
+        if <T as MandelbrotGrid<LANES>>::reduce_max_iteration( &iteration ) >= <C as ColorDepth>::MAX_SUPPORTED_ITERATIONS {
             break;
         }
 
@@ -798,7 +897,7 @@ pub fn calculate_color<T, const LANES: usize>(
         }
         let previous_iteration = iteration.clone();
         iteration = <T as MandelbrotGrid<LANES>>::select_iteration(
-                &condition_mask, iteration + <T as MandelbrotGrid<LANES>>::ITERATION_INCREMENT, previous_iteration );
+                &condition_mask, iteration + iteration_increment, previous_iteration );
 
         // Next value in the series for each pixel.
         let temp: Simd<T, LANES> = x*x - y*y + pixel.x_scaled.clone();
@@ -809,7 +908,8 @@ pub fn calculate_color<T, const LANES: usize>(
     // Calculate the position and the final color.
     let position: u64 = ( pixel.y[ 0 ] as u64 ) << 32;
     let position = position + ( pixel.x [ 0 ] as u64 );
-    let color =iteration.to_array().map( |value| <T as MandelbrotGrid<LANES>>::iteration_to_color( value ) );
+    let unscaled_color = iteration.to_array().map( |value| <T as MandelbrotGrid<LANES>>::iteration_to_unscaled_color( value ) );
+    let color = unscaled_color.map( |color| <C as ColorDepth>::scale_color( color ) );
 
     return Color {
         position,
@@ -830,7 +930,9 @@ const fn get_x_start<const LANES: usize>(
     output
 }
 
+#[cfg(test)]
 mod tests {
+
 
     use super::*;
 
@@ -845,4 +947,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn center_is_white()
+    {
+        // Ensures the center of the grid is white.
+        let x_min = <f32 as MandelbrotGrid<4>>::X_MIN_SIMD.clone();
+        let y_min = <f32 as MandelbrotGrid<4>>::Y_MIN.clone();
+        let mandelbrot = Mandelbrot::<f32, 4>::new( 32, 32 ).unwrap();
+        let pixel = MandelbrotPixel::<f32, 4> {
+            x: Simd::splat( 16 ), y: Simd::splat( 16 ),
+            x_scaled: x_min + mandelbrot.step.x * Simd::splat( 16.0 ),
+            y_scaled: Simd::splat( y_min ) + mandelbrot.step.y * Simd::splat( 16.0 )
+        };
+
+        let color: Color::<u16, 4> = calculate_color( pixel );
+        assert_eq!( color.color.to_vec(), vec![ u16::MAX; 4 ] );
+    }
 }

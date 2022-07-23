@@ -47,15 +47,16 @@ fn main() {
     let height = args.height;
     let mut encoder = png::Encoder::new(w, width, height);
     encoder.set_color( png::ColorType::Grayscale );
-    encoder.set_depth( png::BitDepth::Eight );
+    encoder.set_depth( png::BitDepth::Sixteen );
     let mut writer = encoder.write_header().expect( "Preparing image failed." );
 
     // Calculate color for each pixel.
-    let simd_mandelbrot = simd::Mandelbrot::<f64, 4>::new(width, height ).unwrap();
+    const LANES: usize = 4;
+    let simd_mandelbrot = simd::Mandelbrot::<f64, LANES>::new(width, height ).unwrap();
     let simd_image_data= simd_mandelbrot.iter_tiles();
 
     // Calculate the results in parallel or sequentially.
-    let mut simd_image_data = if args.parallel {
+    let mut simd_image_data: Vec<simd::Color<u16,LANES>> = if args.parallel {
 
         // Enable parallelism
         simd_image_data.par_bridge()
@@ -77,6 +78,7 @@ fn main() {
     simd_image_data.par_sort_by( |a, b| a.position.partial_cmp( &b.position ).unwrap() );
     let simd_image_data = simd_image_data.into_iter()
         .flat_map( |mpixel| mpixel )
+        .flat_map( |color| color.to_be_bytes() )
         .collect::<Vec<_>>();
 
     // Finalize the image.
@@ -121,14 +123,14 @@ mod tests {
 
                     scalar_colors[ i ] = crate::scalar::calculate_color( scalar_pixel );
                 }
-                let simd_colors = crate::simd::calculate_color( simd_pixel );
+                let simd_colors: crate::simd::Color<u8, LANES> = crate::simd::calculate_color( simd_pixel );
                 assert_eq!( simd_colors.color, scalar_colors);
                 image.extend_from_slice( &scalar_colors );
             }
 
             let simd_mandelbrot =
                 simd::Mandelbrot::<f32, 4>::new(width, height).unwrap();
-            let mut simd_image_data= simd_mandelbrot.iter_tiles()
+            let mut simd_image_data: Vec<crate::simd::Color<u8, LANES>>= simd_mandelbrot.iter_tiles()
 
                 // Enable parallelism
                 .par_bridge()
@@ -157,11 +159,12 @@ mod tests {
             // Benchmark the SIMD mandelbrot
             let width = 256;
             let height = 256;
+            const LANES: usize = 2;
             let simd_mandelbrot =
-                    simd::Mandelbrot::<f32, 2>::new(width, height).unwrap();
+                    simd::Mandelbrot::<f32, LANES>::new(width, height).unwrap();
             let simd_image_data = simd_mandelbrot.iter_pixels()
                 .flat_map(|mpixel| simd::calculate_color(mpixel))
-                .collect::<Vec<_>>();
+                .collect::<Vec<u8>>();
 
             // Require to value to prevent compiler optimizations.
             test::black_box(simd_image_data);
@@ -176,11 +179,12 @@ mod tests {
             // Benchmark the SIMD mandelbrot
             let width = 256;
             let height = 256;
+            const LANES: usize = 4;
             let simd_mandelbrot =
-                    simd::Mandelbrot::<f32, 4>::new(width, height).unwrap();
+                    simd::Mandelbrot::<f32, LANES>::new(width, height).unwrap();
             let simd_image_data = simd_mandelbrot.iter_pixels()
                 .flat_map(|mpixel| simd::calculate_color(mpixel) )
-                .collect::<Vec<_>>();
+                .collect::<Vec<u8>>();
 
             // Require to value to prevent compiler optimizations.
             test::black_box(simd_image_data);
@@ -195,9 +199,10 @@ mod tests {
             // Benchmark the SIMD mandelbrot
             let width = 256;
             let height = 256;
+            const LANES: usize = 4;
             let simd_mandelbrot =
-                    simd::Mandelbrot::<f32, 4>::new(width, height).unwrap();
-            let mut simd_image_data= simd_mandelbrot.iter_pixels()
+                    simd::Mandelbrot::<f32, LANES>::new(width, height).unwrap();
+            let mut simd_image_data: Vec<crate::simd::Color<u8, LANES>>= simd_mandelbrot.iter_pixels()
 
                     // Enable parallelism
                     .par_bridge()
@@ -226,9 +231,10 @@ mod tests {
             // Benchmark the SIMD mandelbrot
             let width = 256;
             let height = 256;
+            const LANES: usize = 4;
             let simd_mandelbrot =
-                simd::Mandelbrot::<f32, 4>::new(width, height).unwrap();
-            let mut simd_image_data= simd_mandelbrot.iter_tiles()
+                simd::Mandelbrot::<f32, LANES>::new(width, height).unwrap();
+            let mut simd_image_data: Vec<crate::simd::Color<u8, LANES>> = simd_mandelbrot.iter_tiles()
 
                 // Enable parallelism
                 .par_bridge()
@@ -258,11 +264,12 @@ mod tests {
             // Benchmark the SIMD mandelbrot
             let width = 256;
             let height = 256;
+            const LANES: usize = 8;
             let simd_mandelbrot =
-                    simd::Mandelbrot::<f32, 4>::new(width, height).unwrap();
+                    simd::Mandelbrot::<f32, LANES>::new(width, height).unwrap();
             let simd_image_data = simd_mandelbrot.iter_pixels()
                 .flat_map(|mpixel| simd::calculate_color(mpixel))
-                .collect::<Vec<_>>();
+                .collect::<Vec<u8>>();
 
             // Require to value to prevent compiler optimizations.
             test::black_box(simd_image_data);
@@ -277,11 +284,12 @@ mod tests {
             // Benchmark the SIMD mandelbrot
             let width = 256;
             let height = 256;
+            const LANES: usize = 2;
             let simd_mandelbrot =
-                    simd::Mandelbrot::<f64, 2>::new(width, height).unwrap();
+                    simd::Mandelbrot::<f64, LANES>::new(width, height).unwrap();
             let simd_image_data = simd_mandelbrot.iter_pixels()
                 .flat_map(|mpixel| simd::calculate_color(mpixel))
-                .collect::<Vec<_>>();
+                .collect::<Vec<u8>>();
 
             // Require to value to prevent compiler optimizations.
             test::black_box(simd_image_data);
@@ -296,10 +304,11 @@ mod tests {
             // Benchmark the SIMD mandelbrot
             let width = 256;
             let height = 256;
-            let simd_mandelbrot = simd::Mandelbrot::<f64, 4>::new(width, height).unwrap();
-            let simd_image_data = simd_mandelbrot.iter_pixels()
+            const LANES: usize = 2;
+            let simd_mandelbrot = simd::Mandelbrot::<f64, LANES>::new(width, height).unwrap();
+            let simd_image_data= simd_mandelbrot.iter_pixels()
                 .flat_map(|mpixel| simd::calculate_color(mpixel))
-                .collect::<Vec<_>>();
+                .collect::<Vec<u8>>();
 
             // Require to value to prevent compiler optimizations.
             test::black_box(simd_image_data);
