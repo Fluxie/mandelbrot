@@ -11,7 +11,7 @@ pub struct Mandelbrot<T, const LANES: usize>
         T: SimdElement + PartialOrd,
         LaneCount<LANES>: SupportedLaneCount,
 
-    // Require Add, Mul and Sub SIMD operator support
+        // Require Add, Mul and Sub SIMD operator support
         Simd<T, LANES>: Mul< Output  = Simd<T, LANES>> + Add< Output  = Simd<T, LANES>> + Sub< Output  = Simd<T, LANES>>
 {
     /// Width of the final image in pixels.
