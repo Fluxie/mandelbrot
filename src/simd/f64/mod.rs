@@ -1,4 +1,4 @@
-use std::simd::{f64x4, u32x4, i64x4};
+use std::simd::prelude::*;
 
 /// The contents in this file are preserved to showcase the Rust SIMD without
 /// the complexities of generalizing the solution to different floating point types and lane counts.
@@ -181,7 +181,7 @@ pub fn calculate_color(
         }
 
         // Increment only those lanes that satisfy the Mandelbrot condition.
-        let condition_mask = ( x*x + y*y ).lanes_lt( mandelbrot_condition );
+        let condition_mask = ( x*x + y*y ).simd_lt( mandelbrot_condition );
         if condition_mask.any() == false {
             break;
         }

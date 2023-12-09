@@ -1,5 +1,6 @@
 use std::array::IntoIter;
 use std::ops::{Add, Mul, Sub};
+use std::simd::prelude::*;
 use std::simd::{Mask, MaskElement, Simd, SimdElement, LaneCount, SupportedLaneCount};
 
 mod f64;
@@ -713,7 +714,7 @@ impl<const LANES: usize> MandelbrotGrid<LANES> for f64
         product: Simd<f64, LANES>,
         condition: Simd<f64, LANES>,
     ) -> Mask<i64, LANES> {
-        product.lanes_lt( condition )
+        product.simd_lt( condition )
     }
 
     fn select_iteration(
