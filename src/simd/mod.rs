@@ -1,5 +1,6 @@
 use std::array::IntoIter;
 use std::ops::{Add, Mul, Sub};
+use std::simd::prelude::*;
 use std::simd::{Mask, MaskElement, Simd, SimdElement, LaneCount, SupportedLaneCount};
 
 mod f64;
@@ -11,7 +12,7 @@ pub struct Mandelbrot<T, const LANES: usize>
         T: SimdElement + PartialOrd,
         LaneCount<LANES>: SupportedLaneCount,
 
-    // Require Add, Mul and Sub SIMD operator support
+        // Require Add, Mul and Sub SIMD operator support
         Simd<T, LANES>: Mul< Output  = Simd<T, LANES>> + Add< Output  = Simd<T, LANES>> + Sub< Output  = Simd<T, LANES>>
 {
     /// Width of the final image in pixels.
@@ -581,8 +582,8 @@ impl<'a, T, BOUNDS, const LANES: usize> MandelbrotPixelIterator<'a, T, BOUNDS, L
 
         BOUNDS: MandelbrotBounds<T, LANES>,
 {
-    const X_PIXER_STEP: Simd<u32, LANES>  = Simd::splat( LANES as u32 );
-    const Y_PIXER_STEP: Simd<u32, LANES>  = Simd::splat( 1 );
+    const X_PIXER_STEP: Simd<u32, LANES> = array_splat( LANES as u32 );
+    const Y_PIXER_STEP: Simd<u32, LANES> = array_splat( 1 );
 }
 
 impl<'a, T, BOUNDS, const LANES: usize> Iterator for MandelbrotPixelIterator<'a, T, BOUNDS, LANES>
@@ -662,13 +663,13 @@ impl<const LANES: usize> MandelbrotGrid<LANES> for f64
     const Y_MAX: f64 = 1.12;
 
     // Other constants.
-    const X_MIN_SIMD: Simd<f64, LANES> = Simd::splat( -2.0 );
-    const ZERO: Simd<f64, LANES> = Simd::splat( 0.0 );
-    const TWO: Simd<f64, LANES> = Simd::splat( 2.0 );
-    const MANDELBROT_CONDITION: Simd<f64, LANES> = Simd::splat( 2.0 * 2.0 );
+    const X_MIN_SIMD: Simd<f64, LANES> = array_splat( -2.0 );
+    const ZERO: Simd<f64, LANES> = array_splat( 0.0 );
+    const TWO: Simd<f64, LANES> = array_splat( 2.0 );
+    const MANDELBROT_CONDITION: Simd<f64, LANES> = array_splat( 2.0 * 2.0 );
 
-    const ZERO_ITERATIONS: Simd<i64, LANES> = Simd::splat( 0 );
-    const ITERATION_INCREMENT: Simd<i64, LANES> = Simd::splat( 1 );
+    const ZERO_ITERATIONS: Simd<i64, LANES> = array_splat( 0 );
+    const ITERATION_INCREMENT: Simd<i64, LANES> = array_splat( 1 );
 
     fn x_step(
         pixel_width: u32
@@ -713,7 +714,7 @@ impl<const LANES: usize> MandelbrotGrid<LANES> for f64
         product: Simd<f64, LANES>,
         condition: Simd<f64, LANES>,
     ) -> Mask<i64, LANES> {
-        product.lanes_lt( condition )
+        product.simd_lt( condition )
     }
 
     fn select_iteration(
@@ -740,13 +741,13 @@ impl<const LANES: usize> MandelbrotGrid<LANES> for f32
     const Y_MAX: f32 = 1.12;
 
     // Other constants.
-    const X_MIN_SIMD: Simd<f32, LANES> = Simd::splat( -2.0 );
-    const ZERO: Simd<f32, LANES> = Simd::splat( 0.0 );
-    const TWO: Simd<f32, LANES> = Simd::splat( 2.0 );
-    const MANDELBROT_CONDITION: Simd<f32, LANES> = Simd::splat( 2.0 * 2.0 );
+    const X_MIN_SIMD: Simd<f32, LANES> = array_splat( -2.0 );
+    const ZERO: Simd<f32, LANES> = array_splat( 0.0 );
+    const TWO: Simd<f32, LANES> = array_splat( 2.0 );
+    const MANDELBROT_CONDITION: Simd<f32, LANES> = array_splat( 2.0 * 2.0 );
 
-    const ZERO_ITERATIONS: Simd<i32, LANES> = Simd::splat( 0 );
-    const ITERATION_INCREMENT: Simd<i32, LANES> = Simd::splat( 1 );
+    const ZERO_ITERATIONS: Simd<i32, LANES> = array_splat( 0 );
+    const ITERATION_INCREMENT: Simd<i32, LANES> = array_splat( 1 );
 
     fn x_step(
         pixel_width: u32
@@ -791,7 +792,7 @@ impl<const LANES: usize> MandelbrotGrid<LANES> for f32
         product: Simd<f32, LANES>,
         condition: Simd<f32, LANES>,
     ) -> Mask<i32, LANES> {
-        product.lanes_lt( condition )
+        product.simd_lt( condition )
     }
 
     fn select_iteration(
@@ -804,7 +805,7 @@ impl<const LANES: usize> MandelbrotGrid<LANES> for f32
 }
 
 impl ColorDepth for u8 {
-    
+
     type ColorType = u8;
 
     const MAX_SUPPORTED_ITERATIONS: u32 = ( u8::MAX ) as u32;
@@ -928,6 +929,16 @@ const fn get_x_start<const LANES: usize>(
         l += 1;
     }
     output
+}
+
+const fn array_splat<Scalar, const LANES: usize>(
+    value: Scalar
+) -> Simd<Scalar, LANES>
+    where
+        LaneCount<LANES>: SupportedLaneCount,
+        Scalar: SimdElement
+{
+    Simd::from_array( [value; LANES] )
 }
 
 #[cfg(test)]

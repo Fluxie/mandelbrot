@@ -1,4 +1,4 @@
-use std::simd::{f64x4, u32x4, i64x4};
+use std::simd::prelude::*;
 
 /// The contents in this file are preserved to showcase the Rust SIMD without
 /// the complexities of generalizing the solution to different floating point types and lane counts.
@@ -52,7 +52,7 @@ impl Mandelbrot {
     const X_MIN: f64 = -2.0;
 
     /// A vector of minimum starting values of the set in the X-axis that can satisfy the Mandelbrot condition.
-    const X_MIN_SIMD: f64x4 = f64x4::splat( -2.0 );
+    const X_MIN_SIMD: f64x4 = f64x4::from_array( [ -2.0; 4 ] );
 
     /// Minimum starting value of the set in the Y-axis that can satisfy the Mandelbrot condition.
     const Y_MIN: f64 = -1.12;
@@ -110,8 +110,8 @@ impl Mandelbrot {
 
 impl<'a> MandelbrotIterator<'a> {
     const X_START: u32x4 = u32x4::from_array( [ 0, 1, 2, 3 ]  );
-    const X_PIXER_STEP: u32x4 = u32x4::splat( u32x4::LANES as u32 );
-    const Y_PIXER_STEP: u32x4 = u32x4::splat( 1 );
+    const X_PIXER_STEP: u32x4 = u32x4::from_array( [u32x4::LEN as u32; 4] );
+    const Y_PIXER_STEP: u32x4 = u32x4::from_array( [1; 4] );
 }
 
 impl<'a> Iterator for MandelbrotIterator<'a> {
@@ -163,13 +163,13 @@ impl<'a> Iterator for MandelbrotIterator<'a> {
 #[allow(dead_code)]
 pub fn calculate_color(
     pixel: MandelbrotPixel
-) -> [u8; f64x4::LANES] {
+) -> [u8; f64x4::LEN] {
     let mut x = f64x4::splat( 0.0 );
     let mut y = f64x4::splat( 0.0 );
     let mandelbrot_condition = f64x4::splat( 2.0 * 2.0 );
     const MAX_ITERATIONS: i64 = 255;
-    const ITERATION_INCREMENT: i64x4 = i64x4::splat( 1 );
-    const TWO: f64x4 = f64x4::splat( 2.0 );
+    const ITERATION_INCREMENT: i64x4 = i64x4::from_array( [1; 4] );
+    const TWO: f64x4 = f64x4::from_array( [2.0; 4 ] );
     let mut iteration = i64x4::splat( 0 );
     loop  {
 
@@ -181,7 +181,7 @@ pub fn calculate_color(
         }
 
         // Increment only those lanes that satisfy the Mandelbrot condition.
-        let condition_mask = ( x*x + y*y ).lanes_lt( mandelbrot_condition );
+        let condition_mask = ( x*x + y*y ).simd_lt( mandelbrot_condition );
         if condition_mask.any() == false {
             break;
         }
